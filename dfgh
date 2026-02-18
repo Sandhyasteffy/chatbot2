@@ -1,0 +1,91 @@
+from flask import Flask, request, jsonify, render_template
+from groq import Groq
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+app = Flask(__name__)
+
+# Initialize Groq client
+client = Groq(api_key="gsk_uLlhWbtrLcemwveC0obkpc")
+
+# 📘 Function to read PDF and extract text
+def extract_pdf_text(pdf_path):
+    try:
+        import PyPDF2
+        text = ""
+        with open(pdf_path, "rb") as file:
+            reader = PyPDF2.PdfReader(file)
+            for page in reader.pages:
+                text += page.extract_text()
+        return text
+    except Exception as e:
+        print(f"Error reading PDF: {e}")
+        return "PDF not found or couldn't be read."
+
+# 📂 Load PDF content once when server starts
+pdf_text = extract_pdf_text("agile unit 1.pdf")
+
+# 🏠 Root route - serve the chat interface
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+# 🧠 Route for chatbot
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        user_message = request.json.get("message", "")
+        
+        # Very small heuristic: check simple keyword overlap to decide relevance
+        import re
+        question_tokens = set(re.findall(r"\w{4,}", user_message.lower()))
+        pdf_lower = (pdf_text or "").lower()
+        relevant = False
+        if pdf_lower and question_tokens:
+            for t in question_tokens:
+                if t in pdf_lower:
+                    relevant = True
+                    break
+
+        # Build prompt: if relevant, strongly prefer PDF; otherwise allow general knowledge
+        if relevant:
+            prompt = f"""You are an intelligent tutor assistant.
+Use the following study material to answer questions accurately and concisely.
+
+Study Material:
+{pdf_text}
+
+User Question: {user_message}
+
+Provide a clear and helpful answer based on the study material."""
+        else:
+            prompt = f"""You are an intelligent tutor assistant.
+The user's question may be unrelated to the provided study material. If the study material contains a relevant answer, use it; otherwise answer using your general knowledge. Be concise and helpful.
+
+Study Material (for reference):
+{pdf_text if pdf_text else 'None'}
+
+User Question: {user_message}
+
+Provide a clear and helpful answer."""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a helpful educational assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        answer = response.choices[0].message.content
+        return jsonify({"reply": answer})
+    
+    except Exception as e:
+        return jsonify({"reply": f"Error: {str(e)}"}), 500
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
